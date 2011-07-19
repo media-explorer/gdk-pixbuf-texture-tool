@@ -153,6 +153,10 @@ gdk_pixbuf__pvr_image_load (FILE    *f,
       context = g_new0 (PvrContext, 1);
       context->decompressed = decompressed;
 
+      /* FIXME: The data resulting of the decompression will always have alpha.
+       * might worth repacking the pixbuf to RGB if the original texture did
+       * not have any alpha before handing the pixbuf back to the user */
+
       pixbuf = gdk_pixbuf_new_from_data (data.getData(),
                                          GDK_COLORSPACE_RGB,
                                          TRUE,
@@ -185,12 +189,133 @@ gdk_pixbuf__pvr_image_load (FILE    *f,
   return pixbuf;
 }
 
+bool is_p2 (unsigned int x)
+{
+    return ((x != 0) && !(x & (x - 1)));
+}
+
+static gboolean
+gdk_pixbuf__pvr_image_save (FILE       *f,
+                            GdkPixbuf  *pixbuf,
+                            gchar     **param_keys,
+                            gchar     **param_values,
+                            GError    **error)
+{
+  GdkPixbuf *with_alpha = NULL;
+
+  PVRTRY
+    {
+      PVRTextureUtilities utils;
+      int width, height;
+      guchar *pixels;
+
+      width = gdk_pixbuf_get_width (pixbuf);
+      height = gdk_pixbuf_get_height (pixbuf);
+
+      if (!is_p2 (width))
+        {
+          g_set_error_literal (error,
+                               GDK_PIXBUF_ERROR,
+                               GDK_PIXBUF_ERROR_FAILED,
+                               "Width needs to be a power of 2");
+          return FALSE;
+        }
+
+      if (!is_p2 (height))
+        {
+          g_set_error_literal (error,
+                               GDK_PIXBUF_ERROR,
+                               GDK_PIXBUF_ERROR_FAILED,
+                               "Height needs to be a power of 2");
+          return FALSE;
+        }
+
+      /* The standard format that PVRTexLib takes is RGBA 8888 so we need
+       * to add an alpha channel if the original image does not have one */
+      if (!gdk_pixbuf_get_has_alpha (pixbuf))
+        {
+          with_alpha = gdk_pixbuf_add_alpha (pixbuf, FALSE, 0, 0, 0);
+          pixbuf = with_alpha;
+        }
+
+      if (gdk_pixbuf_get_rowstride (pixbuf) != 4 * width)
+        {
+          g_set_error_literal (error,
+                               GDK_PIXBUF_ERROR,
+                               GDK_PIXBUF_ERROR_FAILED,
+                               "A row stride larger than the width is not "
+                               "allowed");
+          if (with_alpha)
+            g_object_unref (with_alpha);
+
+          return FALSE;
+        }
+
+      /* make a CPVRTexture instance from the GdkPixbuf */
+      pixels = gdk_pixbuf_get_pixels (pixbuf);
+      CPVRTexture uncompressed (width,
+                               height,
+                               0,                       /* u32MipMapCount */
+                               1,                       /* u32NumSurfaces */
+                               false,                   /* bBorder */
+                               false,                   /* bTwiddled */
+                               false,                   /* bCubeMap */
+                               false,                   /* bVolume */
+                               false,                   /* bFalseMips */
+                               true,                    /* bHasAlpha */
+                               false,                   /* bFlipped */
+                               eInt8StandardPixelType,  /* ePixelType */
+                               0.0f,                    /* fNormalMap */
+                               pixels);                 /* pPixelData */
+
+      /* create texture to encode to */
+      CPVRTexture compressed (uncompressed.getHeader());
+
+      /* FIXME: Remove the alpha channel from the compressed texture is the
+       * original GdkPixbuf does not have alpha (But we still need to create
+       * the uncompressed texture with hasAlpha to TRUE as the pixbuf is 4
+       * bytes per pixel anyway */
+
+      /* TODO: Add support for generating the mipmaps */
+
+      /* TODO: Add support for selection with compression we want */
+
+      /* set required encoded pixel type */
+      compressed.setPixelType (OGL_PVRTC4);
+
+      /* encode texture */
+      utils.CompressPVR (uncompressed, compressed);
+
+      /* write to file */
+      compressed.getHeader().writeToFile (f);
+      compressed.getData().writeToFile (f);
+    }
+  PVRCATCH(aaaahhh)
+    {
+      g_set_error_literal (error,
+                           GDK_PIXBUF_ERROR,
+                           GDK_PIXBUF_ERROR_FAILED,
+                           aaaahhh.what());
+
+      if (with_alpha)
+        g_object_unref (with_alpha);
+
+      return FALSE;
+    }
+
+  if (with_alpha)
+    g_object_unref (with_alpha);
+
+  return TRUE;
+}
+
 extern "C" {
 
 G_MODULE_EXPORT void
 fill_vtable (GdkPixbufModule *module)
 {
   module->load = gdk_pixbuf__pvr_image_load;
+  module->save = gdk_pixbuf__pvr_image_save;
 }
 
 G_MODULE_EXPORT void
@@ -216,7 +341,7 @@ fill_info (GdkPixbufFormat *info)
   info->signature = signature_new;
   info->mime_types  = mime_types;
   info->extensions  = extensions;
-  info->flags       = 0;
+  info->flags       = GDK_PIXBUF_FORMAT_WRITABLE;
   info->license     = "LGPL";
 }
 
