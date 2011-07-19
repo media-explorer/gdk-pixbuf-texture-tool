@@ -189,7 +189,8 @@ gdk_pixbuf__pvr_image_load (FILE    *f,
   return pixbuf;
 }
 
-bool is_p2 (unsigned int x)
+static bool
+is_p2 (unsigned int x)
 {
     return ((x != 0) && !(x & (x - 1)));
 }
