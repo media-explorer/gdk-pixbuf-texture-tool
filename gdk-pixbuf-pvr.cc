@@ -196,13 +196,115 @@ is_p2 (unsigned int x)
 }
 
 static gboolean
+parse_format (const gchar *format,
+              PixelType   *type)
+{
+  if (g_strcmp0 (format, "PVRTC2") == 0)
+    {
+      *type = OGL_PVRTC2;
+      return TRUE;
+    }
+  if (g_strcmp0 (format, "PVRTC4") == 0)
+    {
+      *type = OGL_PVRTC4;
+      return TRUE;
+    }
+  if (g_strcmp0 (format, "ETC1") == 0)
+    {
+      *type = ETC_RGB_4BPP;
+      return TRUE;
+    }
+
+  *type = ETC_RGB_4BPP;
+  return FALSE;
+}
+
+static gboolean
+validate_pixbuf_pvrtc (GdkPixbuf  *pixbuf,
+                       GError    **error)
+{
+  int width, height;
+
+  width = gdk_pixbuf_get_width (pixbuf);
+  height = gdk_pixbuf_get_height (pixbuf);
+
+  if (!is_p2 (width))
+    {
+      g_set_error_literal (error,
+                           GDK_PIXBUF_ERROR,
+                           GDK_PIXBUF_ERROR_FAILED,
+                           "Width needs to be a power of 2");
+      return FALSE;
+    }
+
+  if (!is_p2 (height))
+    {
+      g_set_error_literal (error,
+                           GDK_PIXBUF_ERROR,
+                           GDK_PIXBUF_ERROR_FAILED,
+                           "Height needs to be a power of 2");
+      return FALSE;
+    }
+
+  return TRUE;
+}
+
+static gboolean
 gdk_pixbuf__pvr_image_save (FILE       *f,
                             GdkPixbuf  *pixbuf,
                             gchar     **param_keys,
                             gchar     **param_values,
-                            GError    **error)
+                            GError    **error_out)
 {
   GdkPixbuf *with_alpha = NULL;
+  PixelType opt_format = ETC_RGB_4BPP;
+  gboolean valid;
+  GError *error = NULL;
+
+  /* parse the parameters */
+  if (param_keys)
+    {
+      gchar **key_p = param_keys, **value_p = param_values;
+
+      while (*key_p)
+        {
+          if (g_strcmp0 (*key_p, "format") == 0)
+            {
+              if (!parse_format (*value_p, &opt_format))
+                {
+                  g_set_error (error_out,
+                               GDK_PIXBUF_ERROR,
+                               GDK_PIXBUF_ERROR_FAILED,
+                               "Invalid format %s", *value_p);
+                  return FALSE;
+                }
+            }
+          else
+            {
+              g_warning ("Unknown option %s", *key_p);
+            }
+
+          key_p++;
+          value_p++;
+        }
+    }
+
+  /* validate the pixbuf if needed */
+  switch (opt_format)
+    {
+    case OGL_PVRTC2:
+    case OGL_PVRTC4:
+      valid = validate_pixbuf_pvrtc (pixbuf, &error);
+      break;
+    default:
+      valid = TRUE;
+    }
+
+  if (!valid)
+    {
+      g_propagate_error (error_out, error);
+      return FALSE;
+    }
 
   PVRTRY
     {
@@ -212,24 +314,6 @@ gdk_pixbuf__pvr_image_save (FILE       *f,
 
       width = gdk_pixbuf_get_width (pixbuf);
       height = gdk_pixbuf_get_height (pixbuf);
-
-      if (!is_p2 (width))
-        {
-          g_set_error_literal (error,
-                               GDK_PIXBUF_ERROR,
-                               GDK_PIXBUF_ERROR_FAILED,
-                               "Width needs to be a power of 2");
-          return FALSE;
-        }
-
-      if (!is_p2 (height))
-        {
-          g_set_error_literal (error,
-                               GDK_PIXBUF_ERROR,
-                               GDK_PIXBUF_ERROR_FAILED,
-                               "Height needs to be a power of 2");
-          return FALSE;
-        }
 
       /* The standard format that PVRTexLib takes is RGBA 8888 so we need
        * to add an alpha channel if the original image does not have one */
@@ -241,7 +325,7 @@ gdk_pixbuf__pvr_image_save (FILE       *f,
 
       if (gdk_pixbuf_get_rowstride (pixbuf) != 4 * width)
         {
-          g_set_error_literal (error,
+          g_set_error_literal (error_out,
                                GDK_PIXBUF_ERROR,
                                GDK_PIXBUF_ERROR_FAILED,
                                "A row stride larger than the width is not "
@@ -282,7 +366,7 @@ gdk_pixbuf__pvr_image_save (FILE       *f,
       /* TODO: Add support for selection with compression we want */
 
       /* set required encoded pixel type */
-      compressed.setPixelType (OGL_PVRTC4);
+      compressed.setPixelType (opt_format);
 
       /* encode texture */
       utils.CompressPVR (uncompressed, compressed);
@@ -293,7 +377,7 @@ gdk_pixbuf__pvr_image_save (FILE       *f,
     }
   PVRCATCH(aaaahhh)
     {
-      g_set_error_literal (error,
+      g_set_error_literal (error_out,
                            GDK_PIXBUF_ERROR,
                            GDK_PIXBUF_ERROR_FAILED,
                            aaaahhh.what());
