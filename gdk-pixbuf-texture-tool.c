@@ -3,8 +3,6 @@
 
 #include <gdk-pixbuf/gdk-pixbuf.h>
 
-static gchar *opt_output = "output.pvr";
-
 #define FORMAT_ETC1       0
 #define FORMAT_PRVTC2     1
 #define FORMAT_PRVTC4     2
@@ -18,6 +16,7 @@ const char *formats[] =
   "PVRTC4"
 };
 
+static gchar *opt_output = "output.pvr";
 static gchar *opt_format = "ETC1";
 static gboolean opt_list_formats = FALSE;
 static gchar **opt_files;
@@ -28,6 +27,8 @@ static GOptionEntry entries[] =
     "Select the output format", NULL },
   { "list-formats", 0, 0, G_OPTION_ARG_NONE, &opt_list_formats,
     "List the valid formats", NULL },
+  { "output", 'o', 0, G_OPTION_ARG_STRING, &opt_output,
+    "Give the output file name", NULL },
   { G_OPTION_REMAINING, 0, 0, G_OPTION_ARG_FILENAME_ARRAY, &opt_files,
     "input files...", NULL },
   { NULL }
