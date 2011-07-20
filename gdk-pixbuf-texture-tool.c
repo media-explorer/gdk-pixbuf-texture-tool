@@ -7,8 +7,6 @@
 #define FORMAT_PRVTC2     1
 #define FORMAT_PRVTC4     2
 
-#define FORMAT_DEFAULT    FORMAT_ETC1
-
 const char *formats[] =
 {
   "ETC1",
