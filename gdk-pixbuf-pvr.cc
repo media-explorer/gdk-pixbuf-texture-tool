@@ -29,8 +29,6 @@
 
 #include <gdk-pixbuf/gdk-pixbuf.h>
 
-#include "PVRTexLib.h"
-
 using namespace pvrtexlib;
 
 /*
