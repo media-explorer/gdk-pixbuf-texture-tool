@@ -1,5 +1,5 @@
 /*
- * gdk-pixbuf-pvr - A gdk-pixbuf loader for PVR textures
+ * gdk-pixbuf-texture-tool - Play with texture files
  *
  * Copyright © 2011 Intel Corporation
  *
@@ -29,12 +29,9 @@
 
 #include <gdk-pixbuf/gdk-pixbuf.h>
 
+#include "gdk-pixbuf-pvr.h"
+#include "PVRTexLib.h"
 using namespace pvrtexlib;
-
-/*
- * Note: The library provided by Imagination does not seem to provide anything
- * that would allow us to support "incremental loading".
- */
 
 typedef struct
 {
@@ -67,66 +64,25 @@ on_pixbuf_destroyed (guchar *pixels,
 {
   PvrContext *context = (PvrContext *) data;
 
+  g_message ("destroyed");
   delete context->decompressed;
   g_free (context);
 }
 
 static GdkPixbuf *
-gdk_pixbuf__pvr_image_load (FILE    *f,
-                            GError **error)
+pvrtexlib_gdk_pixbuf_new_from_memory (const guchar  *data,
+                                      GError       **error)
 {
-  GdkPixbuf *pixbuf;
-  unsigned char *content;
   CPVRTexture *decompressed;
   PvrContext *context;
-  struct stat st;
-  int fd;
+  GdkPixbuf *pixbuf;
 
   PVRTRY
     {
       PVRTextureUtilities utils;
       PixelType pixel_type;
 
-      fd = fileno (f);
-      if (fd == -1)
-        {
-          g_set_error_literal (error,
-                               GDK_PIXBUF_ERROR,
-                               GDK_PIXBUF_ERROR_FAILED,
-                               "Invalid FILE object");
-          return NULL;
-        }
-
-      if (fstat (fd, &st) == -1)
-        {
-          g_set_error_literal (error,
-                               GDK_PIXBUF_ERROR,
-                               GDK_PIXBUF_ERROR_FAILED,
-                               "Failed to get attributes");
-          return NULL;
-
-        }
-
-      if (st.st_size == 0 || st.st_size > G_MAXSIZE)
-        {
-          content = NULL;
-        }
-      else
-        {
-          content = (unsigned char *) mmap (NULL, st.st_size, PROT_READ,
-                                            MAP_PRIVATE, fd, 0);
-        }
-
-      if (content == NULL || content == MAP_FAILED)
-        {
-          g_set_error_literal (error,
-                               GDK_PIXBUF_ERROR,
-                               GDK_PIXBUF_ERROR_FAILED,
-                               "Failed to map file");
-          return NULL;
-        }
-
-      CPVRTexture compressed (content);
+      CPVRTexture compressed (data);
 
       decompressed = new CPVRTexture();
       utils.DecompressPVR (compressed, *decompressed);
@@ -148,12 +104,12 @@ gdk_pixbuf__pvr_image_load (FILE    *f,
 
       CPVRTextureData& data = decompressed->getData();
 
-      context = g_new0 (PvrContext, 1);
-      context->decompressed = decompressed;
-
       /* FIXME: The data resulting of the decompression will always have alpha.
        * might worth repacking the pixbuf to RGB if the original texture did
        * not have any alpha before handing the pixbuf back to the user */
+
+      context = g_new0 (PvrContext, 1);
+      context->decompressed = decompressed;
 
       pixbuf = gdk_pixbuf_new_from_data (data.getData(),
                                          GDK_COLORSPACE_RGB,
@@ -181,6 +137,66 @@ gdk_pixbuf__pvr_image_load (FILE    *f,
                            GDK_PIXBUF_ERROR_FAILED,
                            aaaahhh.what());
 
+      return NULL;
+    }
+
+  return pixbuf;
+}
+
+static GdkPixbuf *
+gdk_pixbuf__pvr_image_load (FILE    *f,
+                            GError **error)
+{
+  GdkPixbuf *pixbuf;
+  guchar *content;
+  GError *decompress_error = NULL;
+  struct stat st;
+  int fd;
+
+  fd = fileno (f);
+  if (fd == -1)
+    {
+      g_set_error_literal (error,
+                           GDK_PIXBUF_ERROR,
+                           GDK_PIXBUF_ERROR_FAILED,
+                           "Invalid FILE object");
+      return NULL;
+    }
+
+  if (fstat (fd, &st) == -1)
+    {
+      g_set_error_literal (error,
+                           GDK_PIXBUF_ERROR,
+                           GDK_PIXBUF_ERROR_FAILED,
+                           "Failed to get attributes");
+      return NULL;
+
+    }
+
+  if (st.st_size == 0 || st.st_size > G_MAXSIZE)
+    {
+      content = NULL;
+    }
+  else
+    {
+      content = (unsigned char *) mmap (NULL, st.st_size, PROT_READ,
+                                        MAP_PRIVATE, fd, 0);
+    }
+
+  if (content == NULL || content == MAP_FAILED)
+    {
+      g_set_error_literal (error,
+                           GDK_PIXBUF_ERROR,
+                           GDK_PIXBUF_ERROR_FAILED,
+                           "Failed to map file");
+      return NULL;
+    }
+
+  pixbuf = pvrtexlib_gdk_pixbuf_new_from_memory (content,
+                                                 &decompress_error);
+  if (decompress_error)
+    {
+      g_propagate_error (error, decompress_error);
       return NULL;
     }
 
@@ -392,6 +408,116 @@ gdk_pixbuf__pvr_image_save (FILE       *f,
   return TRUE;
 }
 
+/*
+ * Note: The library provided by Imagination does not seem to provide anything
+ * that would allow us to support "incremental loading". What we can do though
+ * is to fake incremental loading by accumulating the data inside an array and
+ * decode it at the end. This allows us to work with GdkPixbufLoader (which a
+ * lot of apps use) at the very least we can signal the size of the level 0
+ * mipmap after having read the header.
+ */
+
+typedef struct
+{
+  GdkPixbufModuleSizeFunc size_func;
+  GdkPixbufModulePreparedFunc prepared_func;
+  GdkPixbufModuleUpdatedFunc updated_func;
+  gpointer user_data;
+
+  GArray *buffer;
+
+  guint got_header : 1;
+} PvrIncContext;
+
+static gpointer
+gdk_pixbuf__pvr_begin_load (GdkPixbufModuleSizeFunc       size_func,
+                            GdkPixbufModulePreparedFunc   prepared_func,
+                            GdkPixbufModuleUpdatedFunc    updated_func,
+                            gpointer                      user_data,
+                            GError                      **error)
+{
+  PvrIncContext *context;
+
+  context = g_new0 (PvrIncContext, 1);
+  context->size_func = size_func;
+  context->prepared_func = prepared_func;
+  context->updated_func  = updated_func;
+  context->user_data = user_data;
+
+  /* initialized so can contain a 512x512 image with 4 bits per pixel without
+   * the need to reallocate the buffer */
+  context->buffer = g_array_sized_new (FALSE, FALSE, 1, 512 * 512 / 2);
+
+  return context;
+}
+
+static gboolean
+gdk_pixbuf__pvr_stop_load (gpointer   contextp,
+                           GError   **error)
+{
+  PvrIncContext *context = (PvrIncContext *) contextp;
+  GdkPixbuf *pixbuf;
+  GError *decompress_error = NULL;
+
+  pixbuf =
+    pvrtexlib_gdk_pixbuf_new_from_memory ((guchar *)context->buffer->data,
+                                          &decompress_error);
+  if (decompress_error)
+    {
+      g_propagate_error (error, decompress_error);
+      return FALSE;
+    }
+
+  if (context->prepared_func)
+    context->prepared_func (pixbuf, NULL, context->user_data);
+
+  g_free (context);
+
+  return TRUE;
+}
+
+static gboolean
+gdk_pixbuf__pvr_load_increment (gpointer       contextp,
+                                const guchar  *buf,
+                                guint          size,
+                                GError       **error)
+{
+  PvrIncContext *context = (PvrIncContext *) contextp;
+
+  g_array_append_vals (context->buffer, buf, size);
+
+  if (!context->got_header && context->buffer->len >= sizeof (PVRHeader))
+    {
+      context->got_header = TRUE;
+
+      if (context->size_func)
+        {
+          gint width, height;
+          PVRHeader *header;
+
+          header = (PVRHeader *) context->buffer->data;
+          width = header->width;
+          height = header->height;
+
+          (*context->size_func) (&width, &height, context->user_data);
+
+          if (width == 0 || height == 0)
+            {
+              /* used to signal we are going to stop loading the image, return
+               * an error for good measure and not fall in the case we return
+               * FALSE without an error set */
+              g_set_error_literal (error,
+                                   GDK_PIXBUF_ERROR,
+                                   GDK_PIXBUF_ERROR_CORRUPT_IMAGE,
+                                   "Zero width or height requested");
+              return FALSE;
+            }
+        }
+    }
+
+  return TRUE;
+}
+
 extern "C" {
 
 G_MODULE_EXPORT void
@@ -399,6 +525,10 @@ fill_vtable (GdkPixbufModule *module)
 {
   module->load = gdk_pixbuf__pvr_image_load;
   module->save = gdk_pixbuf__pvr_image_save;
+
+  module->begin_load = gdk_pixbuf__pvr_begin_load;
+  module->stop_load = gdk_pixbuf__pvr_stop_load;
+  module->load_increment = gdk_pixbuf__pvr_load_increment;
 }
 
 G_MODULE_EXPORT void
