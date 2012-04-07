@@ -64,7 +64,6 @@ on_pixbuf_destroyed (guchar *pixels,
 {
   PvrContext *context = (PvrContext *) data;
 
-  g_message ("destroyed");
   delete context->decompressed;
   g_free (context);
 }
