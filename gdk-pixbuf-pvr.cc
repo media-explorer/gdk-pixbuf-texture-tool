@@ -3,17 +3,8 @@
  *
  * Copyright © 2011 Intel Corporation
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU Lesser General Public License,
- * version 2.1, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT ANY
- * WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
- * FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
- * details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with this program; if not, see <http://www.gnu.org/licenses>
+ * This software is licensed under the BSD 3-Clause license. See the COPYING
+ * file for the full text of the license.
  *
  * Authors: Damien Lespiau <damien.lespiau@intel.com>
  *
@@ -554,7 +545,7 @@ fill_info (GdkPixbufFormat *info)
   info->mime_types  = mime_types;
   info->extensions  = extensions;
   info->flags       = GDK_PIXBUF_FORMAT_WRITABLE;
-  info->license     = "LGPL";
+  info->license     = "BSD";
 }
 
 } /* extern "C" */
